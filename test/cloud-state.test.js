@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { beginCloudWorkspace, mergeCloudWorkspace } from '../../src/lib/cloud-state.ts';
+import { beginCloudWorkspace, mergeCloudWorkspace } from '../../frontend/src/lib/cloud-state.ts';
 
 const initial = { bots: [], sources: [], conversations: [], workspace: 'My workspace', timezone: 'UTC', notifications: {}, profile: { name: 'Owner' } };
 const response = { data: {}, revision: 0, billing: { plan: 'Starter', cycle: 'Monthly', bots: 10 }, canEdit: true };

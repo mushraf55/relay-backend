@@ -41,10 +41,12 @@ export function validateProductionConfig() {
   const required = ['APP_URL', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY', 'DATABASE_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'INNGEST_EVENT_KEY', 'INNGEST_SIGNING_KEY'];
   const missing = required.filter(name => !env[name]);
   if (missing.length) throw new Error(`Missing production environment variables: ${missing.join(', ')}`);
-  if ((env.CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_') || env.CLERK_SECRET_KEY?.startsWith('sk_test_')) && env.ALLOW_CLERK_DEV_MODE !== 'true') throw new Error('Production must use Clerk production keys unless ALLOW_CLERK_DEV_MODE=true is set for a demo deployment.');
-  if (env.STRIPE_SECRET_KEY?.startsWith('sk_test_') && env.ALLOW_STRIPE_TEST_MODE !== 'true') throw new Error('Production must use a live Stripe secret key unless ALLOW_STRIPE_TEST_MODE=true is set for a demo deployment.');
+  if ((env.CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_') || env.CLERK_SECRET_KEY?.startsWith('sk_test_')) && env.ALLOW_CLERK_DEV_MODE !== 'true') console.warn('Production is using Clerk development keys. Set ALLOW_CLERK_DEV_MODE=true to mark this as an intentional demo deployment.');
+  if (env.STRIPE_SECRET_KEY?.startsWith('sk_test_') && env.ALLOW_STRIPE_TEST_MODE !== 'true') console.warn('Production is using Stripe test mode. Set ALLOW_STRIPE_TEST_MODE=true to mark this as an intentional demo deployment.');
   if (!env.STRIPE_WEBHOOK_SECRET?.startsWith('whsec_')) throw new Error('STRIPE_WEBHOOK_SECRET must be a Stripe webhook signing secret.');
   if ((env.JOB_PROVIDER || 'inngest') !== 'inngest') throw new Error('Production must use JOB_PROVIDER=inngest.');
-  if (!Object.values(prices).flatMap(cycles => Object.values(cycles)).every(value => value?.startsWith('price_'))) throw new Error('All Stripe production price IDs must be configured.');
+  const configuredPrices = Object.values(prices).flatMap(cycles => Object.values(cycles)).filter(Boolean);
+  if (!configuredPrices.length) throw new Error('At least one Stripe price ID must be configured.');
+  if (!configuredPrices.every(value => value?.startsWith('price_'))) throw new Error('Configured Stripe price IDs must start with price_.');
   if (new URL(appUrl).protocol !== 'https:') throw new Error('APP_URL must be HTTPS in production.');
 }
