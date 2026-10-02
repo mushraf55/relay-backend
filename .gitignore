@@ -1,0 +1,28 @@
+# dependencies
+/node_modules/
+
+# runtime logs
+*.log
+*.stderr.log
+*.stdout.log
+
+# env files
+.env
+.env.*
+!.env.example
+
+# coverage and temp output
+/coverage/
+/.nyc_output/
+/tmp/
+/temp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+
+# local certificates and dumps
+*.pem
+*.dump
+*.sql.gz

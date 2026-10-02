@@ -1,0 +1,23 @@
+import { client } from '../src/infrastructure/database.js';
+
+const tables = await client`SELECT table_name FROM information_schema.tables WHERE table_schema='relay' ORDER BY table_name`;
+console.log(`Supabase relay schema: ${tables.map(row => row.table_name).join(', ')}`);
+const progressColumns = await client`SELECT column_name FROM information_schema.columns WHERE table_schema='relay' AND table_name='knowledge_files' AND column_name IN ('progress','progress_stage','progress_detail','processed_chunks','total_chunks','progress_updated_at') ORDER BY column_name`;
+const [sizeConstraint] = await client`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname='knowledge_files_size_bytes_check'`;
+if (progressColumns.length !== 6 || !sizeConstraint?.definition?.includes('10485760')) throw new Error('Knowledge progress migration is incomplete');
+console.log(`Knowledge jobs: 10 MB uploads, ${progressColumns.length} persisted progress fields`);
+const memberColumns = await client`SELECT column_name FROM information_schema.columns WHERE table_schema='relay' AND table_name='chat_members' AND column_name IN ('member_id','display_name','role','status','session_token_hash','last_seen_at')`;
+if (memberColumns.length !== 6) throw new Error('Public chat member migration is incomplete');
+console.log('Public chat: revocable member sessions and admin roles ready');
+const [accessMode] = await client`SELECT column_name FROM information_schema.columns WHERE table_schema='relay' AND table_name='deployments' AND column_name='access_mode'`;
+const accountColumns = await client`SELECT column_name FROM information_schema.columns WHERE table_schema='relay' AND table_name='chat_members' AND column_name IN ('account_user_id','requested_at','approved_at')`;
+if (!accessMode || accountColumns.length !== 3) throw new Error('Chat access migration is incomplete');
+console.log('Chat access: open/approval rooms and account history ready');
+const [usageTable] = await client`SELECT table_name FROM information_schema.tables WHERE table_schema='relay' AND table_name='usage_events'`;
+const attributionColumns = await client`SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='relay' AND ((table_name='knowledge_files' AND column_name='uploaded_by_user_id') OR (table_name='ai_chunks' AND column_name='created_by_user_id'))`;
+if (!usageTable || attributionColumns.length !== 2) throw new Error('Usage analytics migration is incomplete');
+console.log('Usage analytics: member attribution and metering ledger ready');
+const billingColumns = await client`SELECT column_name FROM information_schema.columns WHERE table_schema='relay' AND table_name='workspaces' AND column_name IN ('plan_choice','trial_started_at','auto_pay')`;
+if (billingColumns.length !== 3) throw new Error('Trial billing migration is incomplete');
+console.log('Billing trials: plan choice, trial start and autopay columns ready');
+await client.end({ timeout: 2 });
