@@ -1,4 +1,4 @@
-import { connectionUrl, env, origins, prices, validateProductionConfig } from '../src/config/env.js';
+import { connectionUrl, env, origins, validateProductionConfig } from '../src/config/env.js';
 import { client, db } from '../src/infrastructure/database.js';
 import { log } from '../src/infrastructure/observability.js';
 import { sql } from 'drizzle-orm';
@@ -9,14 +9,14 @@ function assertConfigured(name) {
 
 async function main() {
   validateProductionConfig();
-  assertConfigured('UPSTASH_REDIS_REST_URL');
-  assertConfigured('UPSTASH_REDIS_REST_TOKEN');
-  assertConfigured('R2_ACCOUNT_ID');
+  assertConfigured('R2_ENDPOINT');
   assertConfigured('R2_ACCESS_KEY_ID');
   assertConfigured('R2_SECRET_ACCESS_KEY');
   assertConfigured('R2_BUCKET_NAME');
-  assertConfigured('AI_PROVIDER');
-  assertConfigured('EMBEDDING_PROVIDER');
+  assertConfigured('AI_BASE_URL');
+  assertConfigured('AI_API_KEY');
+  assertConfigured('CHAT_MODEL');
+  assertConfigured('EMBEDDING_MODEL');
 
   if (!connectionUrl()) throw new Error('DATABASE_URL is invalid.');
   await db.execute(sql`SELECT 1`);
@@ -24,10 +24,9 @@ async function main() {
   log('info', 'production_check_passed', {
     appUrl: env.APP_URL,
     origins: origins.length,
-    plans: Object.values(prices).flatMap(plan => Object.values(plan)).filter(Boolean).length,
-    jobProvider: env.JOB_PROVIDER,
-    aiProvider: env.AI_PROVIDER,
-    embeddingProvider: env.EMBEDDING_PROVIDER,
+    aiBaseUrl: new URL(env.AI_BASE_URL).origin,
+    chatModel: env.CHAT_MODEL,
+    embeddingModel: env.EMBEDDING_MODEL,
   });
 }
 

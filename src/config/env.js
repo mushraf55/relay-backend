@@ -13,40 +13,13 @@ export const appUrl = new URL(env.APP_URL || 'http://localhost:3000').origin;
 export const origins = [...new Set([appUrl, ...(env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean), ...(env.NODE_ENV !== 'production' ? ['http://127.0.0.1:3000'] : [])])];
 export const clerkAuthorizedParties = env.NODE_ENV === 'production' ? origins : undefined;
 export const connectionUrl = (direct = false) => encodeDatabaseUrl((direct ? env.DIRECT_DATABASE_URL : env.DATABASE_URL) || env.DATABASE_URL || '');
-export const prices = {
-  Starter: { Monthly: env.STRIPE_PRICE_STARTER_MONTHLY, Yearly: env.STRIPE_PRICE_STARTER_YEARLY },
-  Growth: { Monthly: env.STRIPE_PRICE_GROWTH_MONTHLY, Yearly: env.STRIPE_PRICE_GROWTH_YEARLY },
-  Scale: { Monthly: env.STRIPE_PRICE_SCALE_MONTHLY, Yearly: env.STRIPE_PRICE_SCALE_YEARLY },
-};
-const planLimits = {
-  Trial: { bots: 10, members: 1, storageBytes: 25 * 1024 * 1024, chunks: 5_000, aiCalls: 500 },
-  Starter: { bots: 10, members: 1, storageBytes: 25 * 1024 * 1024, chunks: 10_000, aiCalls: 1_000 },
-  Growth: { bots: 25, members: 5, storageBytes: 2 * 1024 * 1024 * 1024, chunks: 100_000, aiCalls: 20_000 },
-  Scale: { bots: 100, members: 25, storageBytes: 20 * 1024 * 1024 * 1024, chunks: 1_000_000, aiCalls: 100_000 },
-};
-export function entitlement(price, status, workspace = {}) {
-  if (['active', 'trialing'].includes(status)) {
-    for (const [plan, cycles] of Object.entries(prices)) {
-      for (const [cycle, id] of Object.entries(cycles)) if (id && id === price) return { plan, cycle, ...planLimits[plan] };
-    }
-  }
-  const trialStarted = workspace.trial_started_at ? new Date(workspace.trial_started_at) : new Date();
-  const trialEndsAt = new Date(trialStarted.getTime() + 7 * 24 * 60 * 60 * 1000);
-  const trialDaysRemaining = Math.max(0, Math.ceil((trialEndsAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
-  return { plan: 'Trial', cycle: '7-day trial', trialEndsAt: trialEndsAt.toISOString(), trialDaysRemaining, autoPay: workspace.auto_pay !== false, ...planLimits.Trial };
-}
-
 export function validateProductionConfig() {
   if (env.NODE_ENV !== 'production') return;
-  const required = ['APP_URL', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY', 'DATABASE_URL', 'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'INNGEST_EVENT_KEY', 'INNGEST_SIGNING_KEY'];
+  const required = ['APP_URL', 'CLERK_PUBLISHABLE_KEY', 'CLERK_SECRET_KEY', 'DATABASE_URL', 'R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME'];
   const missing = required.filter(name => !env[name]);
   if (missing.length) throw new Error(`Missing production environment variables: ${missing.join(', ')}`);
-  if ((env.CLERK_PUBLISHABLE_KEY?.startsWith('pk_test_') || env.CLERK_SECRET_KEY?.startsWith('sk_test_')) && env.ALLOW_CLERK_DEV_MODE !== 'true') console.warn('Production is using Clerk development keys. Set ALLOW_CLERK_DEV_MODE=true to mark this as an intentional demo deployment.');
-  if (env.STRIPE_SECRET_KEY?.startsWith('sk_test_') && env.ALLOW_STRIPE_TEST_MODE !== 'true') console.warn('Production is using Stripe test mode. Set ALLOW_STRIPE_TEST_MODE=true to mark this as an intentional demo deployment.');
-  if (!env.STRIPE_WEBHOOK_SECRET?.startsWith('whsec_')) throw new Error('STRIPE_WEBHOOK_SECRET must be a Stripe webhook signing secret.');
-  if ((env.JOB_PROVIDER || 'inngest') !== 'inngest') throw new Error('Production must use JOB_PROVIDER=inngest.');
-  const configuredPrices = Object.values(prices).flatMap(cycles => Object.values(cycles)).filter(Boolean);
-  if (!configuredPrices.length) throw new Error('At least one Stripe price ID must be configured.');
-  if (!configuredPrices.every(value => value?.startsWith('price_'))) throw new Error('Configured Stripe price IDs must start with price_.');
+  const genericAi = env.AI_BASE_URL && env.AI_API_KEY && env.CHAT_MODEL && env.EMBEDDING_MODEL;
+  const splitAi = env.GROQ_API_KEY && env.GROQ_CHAT_MODEL && env.CLOUDFLARE_ACCOUNT_ID && env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_EMBEDDING_MODEL;
+  if (!genericAi && !splitAi) throw new Error('Configure either generic AI_* variables or Groq chat plus Cloudflare embedding variables.');
   if (new URL(appUrl).protocol !== 'https:') throw new Error('APP_URL must be HTTPS in production.');
 }

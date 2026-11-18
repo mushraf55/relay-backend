@@ -1,13 +1,33 @@
 import { Router } from 'express';
+import { rateLimit } from 'express-rate-limit';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { load } from 'cheerio';
 import { z } from 'zod';
-import { sharedLimit } from '../../infrastructure/rate-limits.js';
-import { validateRemoteUrl } from '../connectors/routes.js';
-import { canEditWorkspace } from '../workspaces/permissions.js';
 
 export const websiteRouter = Router();
-const inputSchema = z.object({ url: z.string().trim().min(1).max(500), maxPages: z.number().int().min(1).max(10).default(5) });
+const inputSchema = z.object({ url: z.string().trim().min(1).max(500), maxPages: z.number().int().min(1).max(15).default(5) });
 const sameSite = (left, right) => left === right || `www.${left}` === right || left === `www.${right}`;
+const scrapeLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, keyGenerator: req => req.workspaceId });
+
+function blockedAddress(address) {
+  const value = address.toLowerCase();
+  if (value === '::1' || value === '::' || /^(fc|fd|fe[89ab])/.test(value)) return true;
+  const match = value.match(/^(?:.*:ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return false;
+  const [a, b] = match.slice(1).map(Number);
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+async function validateRemoteUrl(value) {
+  const normalized = /^[a-z]+:\/\//i.test(value) ? value : `https://${value}`;
+  const url = new URL(normalized);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) throw new Error('Use a public HTTPS website URL without credentials or a custom port.');
+  if (url.hostname === 'localhost' || url.hostname.endsWith('.local') || (isIP(url.hostname) && blockedAddress(url.hostname))) throw new Error('Private network addresses cannot be imported.');
+  const addresses = await lookup(url.hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(item => blockedAddress(item.address))) throw new Error('Private network addresses cannot be imported.');
+  return url;
+}
 
 async function fetchPage(value, startHost, redirects = 0) {
   const url = await validateRemoteUrl(value);
@@ -41,10 +61,12 @@ export function extractReadablePage($, pageUrl) {
   const fallback = root.text().replace(/\s+/g, ' ').trim();
   return { title: ($('h1').first().text() || $('title').first().text() || new URL(pageUrl).pathname).replace(/\s+/g,' ').trim(), text: blocks.join('\n\n') || fallback };
 }
-export async function scrapeWebsite(input) {
+export async function scrapeWebsite(input, onProgress = () => {}) {
   const parsed = inputSchema.parse(input); const start = await validateRemoteUrl(parsed.url); const queue = [canonical(start)]; const visited = new Set(); const pages = [];
+  await onProgress({ stage: 'Starting crawl', detail: `Preparing to scan up to ${parsed.maxPages} pages from ${start.hostname}.`, current: 0, limit: parsed.maxPages, url: start.toString() });
   while (queue.length && visited.size < parsed.maxPages) {
     const next = queue.shift(); if (visited.has(next)) continue; visited.add(next);
+    await onProgress({ stage: 'Fetching page', detail: `Downloading page ${visited.size} of up to ${parsed.maxPages}.`, current: visited.size, limit: parsed.maxPages, url: next });
     const page = await fetchPage(next, start.hostname); const $ = load(page.html, { baseURI: page.url.toString() });
     const robots = $('meta[name="robots"],meta[name="googlebot"]').map((_index, node) => $(node).attr('content') || '').get().join(',').toLowerCase();
     if (!robots.includes('nofollow')) $('a[href]').each((_index, node) => {
@@ -58,7 +80,10 @@ export async function scrapeWebsite(input) {
     if (!robots.includes('noindex')) {
       $('script,style,noscript,svg,nav,footer,form,iframe,template').remove();
       const readable = extractReadablePage($, page.url);
-      if (readable.text.length >= 60) pages.push(`# ${readable.title}\n\nSource: ${page.url}\n\n${readable.text}`);
+      if (readable.text.length >= 60) {
+        pages.push(`# ${readable.title}\n\nSource: ${page.url}\n\n${readable.text}`);
+        await onProgress({ stage: 'Page parsed', detail: `${readable.text.length.toLocaleString()} readable characters extracted.`, current: visited.size, limit: parsed.maxPages, url: page.url.toString(), title: readable.title, discovered: queue.length });
+      } else await onProgress({ stage: 'Page skipped', detail: 'The page did not contain enough readable content.', current: visited.size, limit: parsed.maxPages, url: page.url.toString(), discovered: queue.length });
     }
   }
   if (!pages.length) throw new Error('No readable page content was found.');
@@ -89,17 +114,25 @@ async function discoverSitemap(input) {
   return { site: start.hostname, urls: [...new Set(urls)].slice(0, 50) };
 }
 
-websiteRouter.post('/scrape', async (req, res) => {
-  if (!await canEditWorkspace(req)) return res.status(403).json({ error: 'Workspace editor access required' });
+websiteRouter.post('/scrape', scrapeLimit, async (req, res) => {
   const parsed = inputSchema.safeParse(req.body); if (!parsed.success) return res.status(400).json({ error: 'Enter a valid website URL and page limit.' });
-  const limited = await sharedLimit('upload', req.workspaceId); if (!limited.success) return res.status(429).json({ error: 'Import limit reached. Try again later.' });
   try { res.json(await scrapeWebsite(parsed.data)); }
   catch (error) { const safe = /^(Use |Private network|Website crawling|The website|The URL|A page|No readable)/.test(error.message || '') ? error.message : 'Could not scrape this website. Check that it is public and server-rendered.'; res.status(400).json({ error: safe }); }
 });
 
-websiteRouter.post('/sitemap', async (req, res) => {
-  if (!await canEditWorkspace(req)) return res.status(403).json({ error: 'Workspace editor access required' });
-  const limited = await sharedLimit('upload', req.workspaceId); if (!limited.success) return res.status(429).json({ error: 'Import limit reached. Try again later.' });
+websiteRouter.post('/scrape/stream', scrapeLimit, async (req, res) => {
+  const parsed = inputSchema.safeParse(req.body); if (!parsed.success) return res.status(400).json({ error: 'Enter a valid website URL and choose 5, 10, or 15 pages.' });
+  try {
+    res.status(200).type('application/x-ndjson').set({ 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' }); res.flushHeaders();
+    const result = await scrapeWebsite(parsed.data, event => { res.write(`${JSON.stringify({ type: 'progress', ...event })}\n`); });
+    res.write(`${JSON.stringify({ type: 'done', result })}\n`); res.end();
+  } catch (error) {
+    const safe = /^(Use |Private network|Website crawling|The website|The URL|A page|No readable)/.test(error.message || '') ? error.message : 'Could not scrape this website. Check that it is public and server-rendered.';
+    if (res.headersSent) { res.write(`${JSON.stringify({ type: 'error', error: safe })}\n`); res.end(); } else res.status(400).json({ error: safe });
+  }
+});
+
+websiteRouter.post('/sitemap', scrapeLimit, async (req, res) => {
   try { res.json(await discoverSitemap(req.body)); }
   catch { res.status(400).json({ error: 'Could not find a readable sitemap for this website.' }); }
 });

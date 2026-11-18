@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { client } from '../../infrastructure/database.js';
-import { aiConfig, chunkText, embed, embeddingBatchSize } from './client.js';
-import { recordUsage } from '../analytics/usage.js';
+import { aiConfig, chunkText, embed } from './provider.js';
 
 export const sourceHash = source => createHash('md5').update(`${source.title}\n${source.content}`).digest('hex');
 
@@ -39,7 +38,7 @@ export async function trainTextSource({ workspaceId, userId = null, botId, sourc
   const [row] = await client`SELECT data FROM relay.workspaces WHERE id=${workspaceId}`;
   const source = row?.data.sources?.find(s => s.id === sourceId && s.botId === botId);
   if (!source || !row.data.bots?.some(b => b.id === botId)) throw new Error('Source not found in this workspace');
-  if (!['Text', 'FAQ', 'Connector', 'Website'].includes(source.type)) throw new Error('Unsupported source type.');
+  if (!['Text', 'Website'].includes(source.type)) throw new Error('Only pasted text and website sources can be trained here.');
   const chunks = chunkText(`${source.title}\n${source.content}`);
   if (!chunks.length || chunks.length > 40) throw new Error('Source must contain text and be under 30,000 characters');
   const settings = aiConfig();
@@ -49,7 +48,7 @@ export async function trainTextSource({ workspaceId, userId = null, botId, sourc
   let dimensions;
   try {
     await updateSourceTrainingStatus({ workspaceId, botId, sourceId, status: 'Processing' });
-    const batchSize = Math.min(16, embeddingBatchSize(settings));
+    const batchSize = 16;
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = await embed(chunks.slice(i, i + batchSize), settings);
       modelKey = batch.modelKey;
@@ -64,7 +63,7 @@ export async function trainTextSource({ workspaceId, userId = null, botId, sourc
         item.status = 'Processing';
         item.progress = Math.min(95, 20 + Math.round((processed / chunks.length) * 70));
         item.progressStage = 'Creating embeddings';
-        item.progressDetail = `Embedded ${processed} of ${chunks.length} sections with ${settings.embedding}.`;
+        item.progressDetail = `Embedded ${processed} of ${chunks.length} sections with ${settings.embeddingModel}.`;
         item.processedChunks = processed;
         item.totalChunks = chunks.length;
         await tx`UPDATE relay.workspaces SET data=${JSON.stringify(data)}::jsonb, revision=revision+1, updated_at=now() WHERE id=${workspaceId}`;
@@ -77,8 +76,6 @@ export async function trainTextSource({ workspaceId, userId = null, botId, sourc
       await tx`DELETE FROM relay.ai_chunks WHERE workspace_id=${workspaceId} AND source_id=${sourceId}`;
       for (let i = 0; i < chunks.length; i++) await tx`INSERT INTO relay.ai_chunks(workspace_id,bot_id,source_id,source_hash,model_key,dimensions,content,embedding,created_by_user_id) VALUES(${workspaceId},${botId},${sourceId},${fingerprint},${modelKey},${dimensions},${chunks[i]},${JSON.stringify(vectors[i])}::extensions.vector,${userId})`;
     });
-    await recordUsage({ workspaceId, userId, metric: 'embedding_calls', quantity: Math.ceil(chunks.length / batchSize), metadata: { sourceId, provider: settings.embeddingProvider || settings.provider } });
-    await recordUsage({ workspaceId, userId, metric: 'embedded_chunks', quantity: chunks.length, metadata: { sourceId } });
     await updateSourceTrainingStatus({ workspaceId, botId, sourceId, status: 'Ready', chunks: chunks.length });
     return { chunks: chunks.length, modelKey, dimensions };
   } catch (error) {

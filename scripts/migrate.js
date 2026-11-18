@@ -15,6 +15,7 @@ try {
     await tx.unsafe(readFileSync(new URL('../migrations/007_chat_access.sql', import.meta.url), 'utf8'));
     await tx.unsafe(readFileSync(new URL('../migrations/008_usage_analytics.sql', import.meta.url), 'utf8'));
     await tx.unsafe(readFileSync(new URL('../migrations/009_billing_trials.sql', import.meta.url), 'utf8'));
+    await tx.unsafe(readFileSync(new URL('../migrations/010_shared_chat.sql', import.meta.url), 'utf8'));
   });
   console.log('Relay schema migration complete.');
 } catch (error) { console.error('Migration failed:', error.code || error.name, '(connection details withheld)'); process.exitCode = 1; }

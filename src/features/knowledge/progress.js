@@ -1,10 +1,5 @@
 import { client } from '../../infrastructure/database.js';
 
-let socketServer;
-
-export const workspaceRoom = workspaceId => `workspace:${workspaceId}`;
-export function setProgressSocketServer(io) { socketServer = io; }
-
 export async function reportKnowledgeProgress({ workspaceId, sourceId, objectKey, status = 'processing', progress, stage, detail, processedChunks = 0, totalChunks = 0, error = null }) {
   const safeProgress = Math.max(0, Math.min(100, Math.round(progress)));
   const rows = await client`
@@ -14,8 +9,7 @@ export async function reportKnowledgeProgress({ workspaceId, sourceId, objectKey
     WHERE workspace_id=${workspaceId} AND source_id=${sourceId} AND object_key=${objectKey}
     RETURNING source_id,status,progress,progress_stage,progress_detail,processed_chunks,total_chunks,error_message
   `;
-  if (!rows.length) return;
-  socketServer?.to(workspaceRoom(workspaceId)).emit('knowledge:progress', toProgressEvent(rows[0]));
+  return rows[0] ? toProgressEvent(rows[0]) : null;
 }
 
 export function toProgressEvent(row) {

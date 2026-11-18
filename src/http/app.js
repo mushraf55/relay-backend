@@ -5,21 +5,17 @@ import { rateLimit } from 'express-rate-limit';
 import { verifyToken } from '@clerk/backend';
 import { clerkMiddleware, getAuth } from '@clerk/express';
 import { sql } from 'drizzle-orm';
-import { serve } from 'inngest/express';
 import { clerkAuthorizedParties, origins, env } from '../config/env.js';
 import { db } from '../infrastructure/database.js';
 import { log, requestContext } from '../infrastructure/observability.js';
 import { aiRouter } from '../features/ai/routes.js';
-import { billingRouter } from '../features/billing/routes.js';
-import { stripeWebhook } from '../features/billing/webhook.js';
-import { connectorRouter } from '../features/connectors/routes.js';
+import { coreAnalyticsRouter } from '../features/analytics/core-routes.js';
 import { deployRouter } from '../features/deployments/routes.js';
-import { inngest, inngestFunctions } from '../features/knowledge/jobs.js';
 import { knowledgeRouter } from '../features/knowledge/routes.js';
-import { embedScript, publicRouter } from '../features/public-chat/routes.js';
+import { embedScript, publicRouter } from '../features/public-chat/simple-routes.js';
 import { websiteRouter } from '../features/websites/routes.js';
 import { workspaceRouter } from '../features/workspaces/routes.js';
-import { analyticsRouter } from '../features/analytics/routes.js';
+import { resolveWorkspaceIdentity } from '../features/workspaces/identity.js';
 
 export const app = express();
 
@@ -39,7 +35,7 @@ app.use(cors({
     return callback(error);
   },
   methods: ['GET', 'PUT', 'POST', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Workspace-Id', 'X-Relay-Embed-Origin'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Workspace-Id', 'X-Relay-Embed-Origin', 'X-Chat-Session'],
 }));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.get('/ready', async (_req, res) => {
@@ -52,34 +48,21 @@ app.get('/ready', async (_req, res) => {
 });
 app.get('/embed.js', embedScript);
 
-// Stripe needs the untouched request bytes to validate its signature.
-app.post('/webhooks/stripe', express.raw({ type: 'application/json', limit: '1mb' }), stripeWebhook);
-app.use('/api/inngest', express.json({ limit: '1mb' }), serve({
-  client: inngest,
-  functions: inngestFunctions,
-  servePath: '/api/inngest',
-}));
 app.use('/public', cors({
   origin: true,
   methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'X-Relay-Embed-Origin'],
-}), express.json({ limit: '100kb' }), publicRouter);
+  allowedHeaders: ['Content-Type', 'X-Relay-Embed-Origin', 'X-Chat-Session'],
+}), express.json({ limit: '100kb' }), rateLimit({ windowMs: 60_000, limit: 30 }), publicRouter);
 
 app.use('/api', rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false }));
 app.use('/api', clerkMiddleware({ publishableKey: env.CLERK_PUBLISHABLE_KEY, secretKey: env.CLERK_SECRET_KEY, authorizedParties: clerkAuthorizedParties }));
 app.use('/api', async (req, res, next) => {
   const auth = getAuth(req);
   let userId = auth.userId;
-  let orgId = auth.orgId;
-  let orgRole = auth.orgRole;
-  let userEmail = auth.sessionClaims?.email || auth.sessionClaims?.primary_email_address || auth.sessionClaims?.email_address || '';
   if (!userId && /^Bearer\s+\S+/.test(req.get('Authorization') || '')) {
     try {
       const claims = await verifyToken((req.get('Authorization') || '').replace(/^Bearer\s+/i, ''), { secretKey: env.CLERK_SECRET_KEY, authorizedParties: clerkAuthorizedParties });
       userId = claims.sub;
-      orgId = claims.org_id || claims.o?.id || null;
-      orgRole = claims.org_role || claims.o?.rol || null;
-      userEmail = claims.email || claims.primary_email_address || claims.email_address || '';
     } catch (error) {
       req.clerkFallbackError = error;
       log('warn', 'clerk_token_fallback_failed', { requestId: req.requestId, code: error.code, name: error.name });
@@ -93,14 +76,10 @@ app.use('/api', async (req, res, next) => {
     log('warn', 'auth_required', { requestId: req.requestId, path: req.path, hasAuthorization: /^Bearer\s+\S+/.test(req.get('Authorization') || '') });
     return res.status(401).json({ error: 'Sign in to continue', ...detail });
   }
-
-  req.workspaceId = orgId ? `org:${orgId}` : `user:${userId}`;
-  req.userId = userId;
-  req.userEmail = userEmail;
-  if (req.headers['x-workspace-id'] && req.headers['x-workspace-id'] !== req.workspaceId) {
-    return res.status(409).json({ error: 'Active workspace changed. Reload before saving.' });
-  }
-  req.isAdmin = !orgId || orgRole === 'org:admin' || orgRole === 'admin';
+  const identity = resolveWorkspaceIdentity(userId, req.headers['x-workspace-id']);
+  if (!identity.ok) return res.status(identity.status).json({ error: identity.error });
+  req.workspaceId = identity.workspaceId;
+  req.userId = identity.userId;
   return next();
 });
 app.use(express.json({ limit: '2mb' }));
@@ -111,12 +90,10 @@ app.use('/api', async (req, _res, next) => {
 
 app.use('/api/workspace', workspaceRouter);
 app.use('/api/ai', aiRouter);
-app.use('/api/billing', billingRouter);
+app.use('/api/analytics', coreAnalyticsRouter);
 app.use('/api/knowledge', knowledgeRouter);
 app.use('/api/deploy', deployRouter);
-app.use('/api/connectors', connectorRouter);
 app.use('/api/websites', websiteRouter);
-app.use('/api/analytics', analyticsRouter);
 
 app.use((_req, res) => res.status(404).json({ error: 'Endpoint not found' }));
 app.use((error, req, res, _next) => {
